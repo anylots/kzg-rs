@@ -389,53 +389,6 @@ impl KzgProof {
         ))
     }
 
-    pub fn verify_kzg_proof_batch(
-        commitments: &[G1Affine],
-        zs: &[Scalar],
-        ys: &[Scalar],
-        proofs: &[G1Affine],
-        kzg_settings: &KzgSettings,
-    ) -> Result<bool, KzgError> {
-        let n = commitments.len();
-
-        // Initialize vectors to store intermediate values
-        let mut c_minus_y: Vec<G1Projective> = Vec::with_capacity(n);
-        let mut r_times_z: Vec<Scalar> = Vec::with_capacity(n);
-
-        // Compute r powers
-        let r_powers = compute_r_powers(commitments, zs, ys, proofs)?;
-
-        // Convert proofs to G1Projective
-        let proofs = proofs.iter().map(Into::into).collect::<Vec<_>>();
-
-        // Compute proof linear combination
-        let proof_lincomb = G1Projective::msm_variable_base(&proofs, &r_powers);
-
-        // Compute c_minus_y and r_times_z
-        for i in 0..n {
-            let ys_encrypted = G1Affine::generator() * ys[i];
-            c_minus_y.push(commitments[i] - ys_encrypted);
-            r_times_z.push(r_powers[i] * zs[i]);
-        }
-
-        // Compute proof_z_lincomb and c_minus_y_lincomb
-        let proof_z_lincomb = G1Projective::msm_variable_base(&proofs, &r_times_z);
-        let c_minus_y_lincomb = G1Projective::msm_variable_base(&c_minus_y, &r_powers);
-
-        // Compute rhs_g1
-        let rhs_g1 = c_minus_y_lincomb + proof_z_lincomb;
-
-        // Verify the pairing equation
-        let result = pairings_verify(
-            proof_lincomb.into(),
-            kzg_settings.g2_points[1],
-            rhs_g1.into(),
-            G2Affine::generator(),
-        );
-
-        Ok(result)
-    }
-
     pub fn verify_blob_kzg_proof(
         blob: Blob,
         commitment_bytes: &Bytes48,
@@ -460,61 +413,6 @@ impl KzgProof {
 
         // Verify the KZG proof
         verify_kzg_proof_impl(commitment, evaluation_challenge, y, proof, kzg_settings)
-    }
-
-    pub fn verify_blob_kzg_proof_batch(
-        blobs: Vec<Blob>,
-        commitments_bytes: Vec<Bytes48>,
-        proofs_bytes: Vec<Bytes48>,
-        kzg_settings: &KzgSettings,
-    ) -> Result<bool, KzgError> {
-        if blobs.is_empty() {
-            return Ok(true);
-        }
-
-        if blobs.len() == 1 {
-            return Self::verify_blob_kzg_proof(
-                blobs[0].clone(),
-                &commitments_bytes[0],
-                &proofs_bytes[0],
-                kzg_settings,
-            );
-        }
-
-        if blobs.len() != commitments_bytes.len() {
-            return Err(KzgError::InvalidBytesLength(
-                "Invalid commitments length".to_string(),
-            ));
-        }
-
-        if blobs.len() != proofs_bytes.len() {
-            return Err(KzgError::InvalidBytesLength(
-                "Invalid proofs length".to_string(),
-            ));
-        }
-
-        let commitments = commitments_bytes
-            .iter()
-            .map(safe_g1_affine_from_bytes)
-            .collect::<Result<Vec<_>, _>>()?;
-
-        let proofs = proofs_bytes
-            .iter()
-            .map(safe_g1_affine_from_bytes)
-            .collect::<Result<Vec<_>, _>>()?;
-
-        validate_batched_input(&commitments, &proofs)?;
-
-        let (evaluation_challenges, ys) =
-            compute_challenges_and_evaluate_polynomial(blobs, &commitments, kzg_settings)?;
-
-        Self::verify_kzg_proof_batch(
-            &commitments,
-            &evaluation_challenges,
-            &ys,
-            &proofs,
-            kzg_settings,
-        )
     }
 }
 
@@ -696,38 +594,7 @@ pub mod tests {
         }
     }
 
-    #[test]
-    pub fn test_verify_blob_kzg_proof_batch() {
-        let test_files = VERIFY_BLOB_KZG_PROOF_BATCH_TESTS;
-        let kzg_settings = KzgSettings::load_trusted_setup_file().unwrap();
 
-        for (_test_file, data) in test_files {
-            let test: Test<BlobBatchInput> = serde_yaml::from_str(data).unwrap();
-            let (Ok(blobs), Ok(commitments), Ok(proofs)) = (
-                test.input.get_blobs(),
-                test.input.get_commitments(),
-                test.input.get_proofs(),
-            ) else {
-                assert!(test.get_output().is_none());
-                continue;
-            };
-
-            let result = KzgProof::verify_blob_kzg_proof_batch(
-                vec![blobs],
-                vec![commitments],
-                vec![proofs],
-                &kzg_settings,
-            );
-            match result {
-                Ok(result) => {
-                    assert_eq!(result, test.get_output().unwrap_or(false));
-                }
-                Err(_) => {
-                    assert!(test.get_output().is_none());
-                }
-            }
-        }
-    }
 
     #[test]
     pub fn test_compute_challenge() {
